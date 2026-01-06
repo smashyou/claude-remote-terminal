@@ -596,6 +596,17 @@
       .toolbar-btn {
         display: none;
       }
+
+      #scrollUpBtn, #scrollDownBtn, #scrollExitBtn {
+        display: flex;
+        padding: 0.5rem;
+        font-size: 0;
+      }
+
+      #scrollUpBtn svg, #scrollDownBtn svg, #scrollExitBtn svg {
+        width: 20px;
+        height: 20px;
+      }
     }
     
     /* Custom scrollbar */
@@ -688,6 +699,22 @@
           <span>Menu</span>
         </button>
         <span class="toolbar-title" id="toolbarTitle">Select a session to begin</span>
+        <button class="toolbar-btn" id="scrollUpBtn" title="Scroll Up">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="18 15 12 9 6 15"/>
+          </svg>
+        </button>
+        <button class="toolbar-btn" id="scrollDownBtn" title="Scroll Down">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        <button class="toolbar-btn" id="scrollExitBtn" title="Exit scroll mode (q)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
         <button class="toolbar-btn" id="newTerminalBtn">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="4 17 10 11 4 5"/>
@@ -744,6 +771,8 @@
     let ws = null;
     let currentSession = null;
     let token = null;
+    let scrollModeActive = false;
+    let scrollModeEntering = false;
     
     // DOM Elements
     const loginScreen = document.getElementById('loginScreen');
@@ -938,7 +967,10 @@
         cursorBlink: true,
         cursorStyle: 'bar',
         allowTransparency: false,
-        scrollback: 10000
+        scrollback: 10000,
+        // Enable touch scrolling for mobile
+        scrollOnUserInput: true,
+        convertEol: true
       });
       
       fitAddon = new FitAddon.FitAddon();
@@ -947,7 +979,67 @@
       
       terminal.open(terminalEl);
       fitAddon.fit();
-      
+
+      // Mobile touch scrolling support - sends arrow keys to tmux for smooth scrolling
+      let touchStartY = 0;
+      let lastScrollTime = 0;
+
+      terminalEl.addEventListener('touchstart', (e) => {
+        touchStartY = e.touches[0].clientY;
+      }, { passive: true });
+
+      terminalEl.addEventListener('touchmove', (e) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        const now = Date.now();
+        if (now - lastScrollTime < 50) return; // Throttle to prevent flooding
+
+        const touchY = e.touches[0].clientY;
+        const deltaY = touchStartY - touchY;
+
+        // Need some movement
+        if (Math.abs(deltaY) > 15) {
+          if (currentSession && !scrollModeActive && !scrollModeEntering) {
+            // Enter tmux copy mode first
+            scrollModeEntering = true;
+            ws.send(JSON.stringify({ type: 'input', data: '\x02[' }));
+            setTimeout(() => {
+              scrollModeActive = true;
+              scrollModeEntering = false;
+            }, 150);
+            lastScrollTime = now;
+            touchStartY = touchY;
+            return;
+          }
+
+          if (scrollModeActive) {
+            // Send arrow up or down for smooth line-by-line scrolling
+            const lines = Math.ceil(Math.abs(deltaY) / 20);
+            const key = deltaY > 0 ? '\x1b[A' : '\x1b[B'; // Up or Down arrow
+
+            for (let i = 0; i < Math.min(lines, 3); i++) {
+              ws.send(JSON.stringify({ type: 'input', data: key }));
+            }
+          }
+
+          touchStartY = touchY;
+          lastScrollTime = now;
+        }
+      }, { passive: true });
+
+      // Double-tap to exit scroll mode
+      let lastTap = 0;
+      terminalEl.addEventListener('touchend', (e) => {
+        const now = Date.now();
+        if (now - lastTap < 300 && scrollModeActive) {
+          // Double tap - exit copy mode
+          ws.send(JSON.stringify({ type: 'input', data: 'q' }));
+          scrollModeActive = false;
+          scrollModeEntering = false;
+        }
+        lastTap = now;
+      }, { passive: true });
+
       // Handle resize
       window.addEventListener('resize', () => {
         if (fitAddon) fitAddon.fit();
@@ -959,7 +1051,7 @@
           }));
         }
       });
-      
+
       // Handle input
       terminal.onData(data => {
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1017,6 +1109,8 @@
     // Attach to tmux session
     function attachToSession(sessionName) {
       currentSession = sessionName;
+      scrollModeActive = false;
+      scrollModeEntering = false;
       toolbarTitle.textContent = `tmux: ${sessionName}`;
       
       // Hide proxy, show terminal
@@ -1044,6 +1138,8 @@
         ws = null;
       }
       currentSession = null;
+      scrollModeActive = false;
+      scrollModeEntering = false;
       toolbarTitle.textContent = 'Select a session to begin';
       terminalPlaceholder.style.display = 'flex';
       if (terminal) {
@@ -1125,7 +1221,62 @@
     
     // Refresh ports
     document.getElementById('refreshPortsBtn').addEventListener('click', loadPorts);
-    
+
+    // Scroll buttons for mobile
+    function sendScrollKeys(direction) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      // Send Page Up/Down for faster scrolling in copy mode
+      const key = direction === 'up' ? '\x1b[5~' : '\x1b[6~';  // Page Up / Page Down
+      ws.send(JSON.stringify({ type: 'input', data: key }));
+    }
+
+    document.getElementById('scrollUpBtn').addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      if (!scrollModeActive && currentSession && !scrollModeEntering) {
+        // Enter tmux copy mode first (Ctrl+B, [)
+        scrollModeEntering = true;
+        ws.send(JSON.stringify({ type: 'input', data: '\x02[' }));
+
+        // Wait for copy mode to activate, then scroll
+        setTimeout(() => {
+          scrollModeActive = true;
+          scrollModeEntering = false;
+          sendScrollKeys('up');
+        }, 150);
+      } else if (scrollModeActive) {
+        sendScrollKeys('up');
+      }
+    });
+
+    document.getElementById('scrollDownBtn').addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      if (scrollModeActive) {
+        sendScrollKeys('down');
+      } else if (currentSession && !scrollModeEntering) {
+        // Enter copy mode first if not active
+        scrollModeEntering = true;
+        ws.send(JSON.stringify({ type: 'input', data: '\x02[' }));
+
+        setTimeout(() => {
+          scrollModeActive = true;
+          scrollModeEntering = false;
+          sendScrollKeys('down');
+        }, 150);
+      }
+    });
+
+    document.getElementById('scrollExitBtn').addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      // Send 'q' to exit copy mode
+      ws.send(JSON.stringify({ type: 'input', data: 'q' }));
+      scrollModeActive = false;
+      scrollModeEntering = false;
+    });
+
     // Mobile menu
     document.getElementById('mobileMenuBtn').addEventListener('click', () => {
       sidebar.classList.add('open');

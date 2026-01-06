@@ -115,6 +115,27 @@ function getHomeDir() {
   return os.homedir();
 }
 
+// Get tmux path (handles Homebrew on both Intel and Apple Silicon Macs)
+function getTmuxPath() {
+  if (isWindows) return null;
+
+  // Try common paths
+  const paths = [
+    '/opt/homebrew/bin/tmux',  // Apple Silicon Mac (Homebrew)
+    '/usr/local/bin/tmux',      // Intel Mac (Homebrew)
+    '/usr/bin/tmux',            // Linux system install
+    'tmux'                      // Fall back to PATH
+  ];
+
+  for (const p of paths) {
+    try {
+      execSync(`${p} -V`, { stdio: 'pipe' });
+      return p;
+    } catch {}
+  }
+  return 'tmux';
+}
+
 // List all tmux sessions
 app.get('/api/sessions', authMiddleware, (req, res) => {
   if (!checkTmux()) {
@@ -372,8 +393,9 @@ wss.on('connection', (ws, req) => {
 
     if (sessionName && !isWindows) {
       // Attach to existing tmux session (Unix only)
-      const tmuxPath = isMac ? '/usr/local/bin/tmux' : 'tmux';
-      term = pty.spawn(tmuxPath, ['attach-session', '-t', sessionName], {
+      // Use -d to detach other clients - prevents screen size conflicts
+      const tmuxPath = getTmuxPath();
+      term = pty.spawn(tmuxPath, ['attach-session', '-d', '-t', sessionName], {
         name: 'xterm-256color',
         cols,
         rows,
