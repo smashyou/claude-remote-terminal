@@ -8,7 +8,13 @@ import jwt from 'jsonwebtoken';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { execSync, exec } from 'child_process';
+import os from 'os';
 import dotenv from 'dotenv';
+
+// Detect platform
+const isWindows = os.platform() === 'win32';
+const isMac = os.platform() === 'darwin';
+const isLinux = os.platform() === 'linux';
 
 dotenv.config();
 
@@ -83,14 +89,30 @@ app.post('/api/logout', (req, res) => {
 // TMUX SESSION MANAGEMENT
 // ============================================
 
-// Check if tmux is installed
+// Check if tmux is installed (not available on Windows by default)
 function checkTmux() {
+  if (isWindows) {
+    return false;
+  }
   try {
     execSync('which tmux', { stdio: 'pipe' });
     return true;
   } catch {
     return false;
   }
+}
+
+// Get default shell based on platform
+function getDefaultShell() {
+  if (isWindows) {
+    return process.env.COMSPEC || 'powershell.exe';
+  }
+  return process.env.SHELL || '/bin/bash';
+}
+
+// Get home directory cross-platform
+function getHomeDir() {
+  return os.homedir();
 }
 
 // List all tmux sessions
@@ -158,26 +180,62 @@ app.delete('/api/sessions/:name', authMiddleware, (req, res) => {
 // DEV SERVER PROXY
 // ============================================
 
-// Get list of listening ports
+// Get list of listening ports (cross-platform)
 app.get('/api/ports', authMiddleware, (req, res) => {
   try {
-    // macOS-specific: use lsof to find listening ports
-    const output = execSync(
-      `lsof -iTCP -sTCP:LISTEN -n -P | grep -E ":[0-9]+" | awk '{print $9, $1}' | sort -u`,
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-    );
-    
-    const ports = output.trim().split('\n').filter(Boolean).map(line => {
-      const parts = line.split(' ');
-      const address = parts[0];
-      const process = parts[1] || 'unknown';
-      const port = address.split(':').pop();
-      return { port: parseInt(port), process, address };
-    }).filter(p => p.port >= 1024 && p.port <= 65535); // Filter reasonable ports
-    
-    // Remove duplicates
-    const uniquePorts = [...new Map(ports.map(p => [p.port, p])).values()];
-    
+    let output;
+    let ports = [];
+
+    if (isWindows) {
+      // Windows: use netstat
+      output = execSync('netstat -ano -p TCP | findstr LISTENING', {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+      ports = output.trim().split('\n').filter(Boolean).map(line => {
+        const parts = line.trim().split(/\s+/);
+        const address = parts[1] || '';
+        const port = parseInt(address.split(':').pop());
+        const pid = parts[4];
+        return { port, process: `PID:${pid}`, address };
+      });
+    } else if (isMac) {
+      // macOS: use lsof
+      output = execSync(
+        `lsof -iTCP -sTCP:LISTEN -n -P | grep -E ":[0-9]+" | awk '{print $9, $1}' | sort -u`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      ports = output.trim().split('\n').filter(Boolean).map(line => {
+        const parts = line.split(' ');
+        const address = parts[0];
+        const process = parts[1] || 'unknown';
+        const port = address.split(':').pop();
+        return { port: parseInt(port), process, address };
+      });
+    } else {
+      // Linux: use ss or netstat
+      try {
+        output = execSync('ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null', {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          shell: '/bin/bash'
+        });
+        ports = output.trim().split('\n').slice(1).filter(Boolean).map(line => {
+          const parts = line.trim().split(/\s+/);
+          const address = parts[3] || parts[4] || '';
+          const port = parseInt(address.split(':').pop());
+          const process = parts[parts.length - 1] || 'unknown';
+          return { port, process, address };
+        });
+      } catch {
+        ports = [];
+      }
+    }
+
+    // Filter reasonable ports and remove duplicates
+    const filteredPorts = ports.filter(p => p.port >= 1024 && p.port <= 65535);
+    const uniquePorts = [...new Map(filteredPorts.map(p => [p.port, p])).values()];
+
     res.json({ ports: uniquePorts });
   } catch (error) {
     res.json({ ports: [], error: error.message });
@@ -307,28 +365,30 @@ wss.on('connection', (ws, req) => {
   let term;
 
   try {
-    const cwd = process.env.HOME || '/tmp';
-    const shell = process.env.SHELL || '/bin/zsh';
+    const cwd = getHomeDir();
+    const shell = getDefaultShell();
 
-    console.log('Spawning PTY:', { sessionName, shell, cwd, cols, rows });
+    console.log('Spawning PTY:', { sessionName, shell, cwd, cols, rows, platform: os.platform() });
 
-    if (sessionName) {
-      // Attach to existing tmux session
-      term = pty.spawn('/usr/local/bin/tmux', ['attach-session', '-t', sessionName], {
+    if (sessionName && !isWindows) {
+      // Attach to existing tmux session (Unix only)
+      const tmuxPath = isMac ? '/usr/local/bin/tmux' : 'tmux';
+      term = pty.spawn(tmuxPath, ['attach-session', '-t', sessionName], {
         name: 'xterm-256color',
         cols,
         rows,
         cwd,
-        env: { HOME: process.env.HOME, PATH: process.env.PATH, TERM: 'xterm-256color', SHELL: shell }
+        env: { ...process.env, TERM: 'xterm-256color' }
       });
     } else {
-      // Create a new shell (for standalone terminal)
-      term = pty.spawn(shell, [], {
+      // Create a new shell (cross-platform)
+      const shellArgs = isWindows ? [] : [];
+      term = pty.spawn(shell, shellArgs, {
         name: 'xterm-256color',
         cols,
         rows,
         cwd,
-        env: { HOME: process.env.HOME, PATH: process.env.PATH, TERM: 'xterm-256color', SHELL: shell }
+        env: { ...process.env, TERM: 'xterm-256color' }
       });
     }
   } catch (error) {
@@ -387,20 +447,26 @@ app.get('*', (req, res) => {
   res.sendFile(join(__dirname, '../public/index.html'));
 });
 
+// Get tmux install instructions based on platform
+function getTmuxInstallHint() {
+  if (isWindows) return 'N/A on Windows (use WSL for tmux)';
+  if (isMac) return 'run: brew install tmux';
+  return 'run: sudo apt install tmux';
+}
+
 // Start server
 server.listen(PORT, '0.0.0.0', () => {
+  const tmuxStatus = checkTmux() ? '✓ installed' : `✗ NOT INSTALLED - ${getTmuxInstallHint()}`;
+  const platformName = isWindows ? 'Windows' : (isMac ? 'macOS' : 'Linux');
+
   console.log(`
 ╔════════════════════════════════════════════════════════════════╗
 ║           Claude Remote Terminal Server                        ║
 ╠════════════════════════════════════════════════════════════════╣
-║                                                                ║
-║   Server running at: http://localhost:${PORT}                    ║
-║                                                                ║
-║   Default password: ${PASSWORD}                              ║
-║   (Change via PASSWORD env variable)                           ║
-║                                                                ║
-║   tmux status: ${checkTmux() ? '✓ installed' : '✗ NOT INSTALLED - run: brew install tmux'}                              ║
-║                                                                ║
+║   Platform: ${platformName.padEnd(50)}║
+║   Server running at: http://localhost:${String(PORT).padEnd(24)}║
+║   Default password: ${PASSWORD.padEnd(42)}║
+║   tmux status: ${tmuxStatus.substring(0, 47).padEnd(47)}║
 ╚════════════════════════════════════════════════════════════════╝
   `);
 });

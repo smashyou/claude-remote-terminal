@@ -1,16 +1,19 @@
 # Claude Remote Terminal
 
-Access your home Mac's terminal from anywhere — designed for continuing Claude Code CLI sessions remotely.
+Access your computer's terminal from anywhere — designed for continuing Claude Code CLI sessions remotely.
+
+**Works on macOS, Linux, and Windows!**
 
 ![Terminal Interface](https://via.placeholder.com/800x450/09090b/22d3ee?text=Claude+Remote+Terminal)
 
 ## Features
 
-- **tmux Session Management** — Create, attach to, and manage tmux sessions
+- **tmux Session Management** — Create, attach to, and manage tmux sessions (macOS/Linux)
 - **Session Continuity** — Continue Claude Code conversations from anywhere
 - **Full Terminal** — Complete terminal access with streaming output
 - **Dev Server Proxy** — View your running localhost apps remotely
 - **Mobile Friendly** — Works on phone browsers
+- **Cross-Platform** — Works on macOS, Linux, and Windows
 - **Simple Auth** — Password protection (designed for VPN use)
 
 ---
@@ -19,12 +22,21 @@ Access your home Mac's terminal from anywhere — designed for continuing Claude
 
 ### 1. Install Prerequisites
 
+**macOS:**
 ```bash
-# Install tmux (if not already installed)
-brew install tmux
+brew install tmux node
+```
 
-# Install Node.js (if not already installed)
-brew install node
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt update && sudo apt install tmux nodejs npm
+```
+
+**Windows:**
+```powershell
+# Install Node.js from https://nodejs.org
+# tmux is not available on Windows (use WSL for tmux support)
+# Terminal will use PowerShell by default
 ```
 
 ### 2. Setup the Project
@@ -71,26 +83,46 @@ You should see:
 
 ## How to Use with Claude Code
 
-### Your New Workflow
+### Understanding the Setup
 
-**Instead of:**
-```bash
-cd ~/projects/my-app
-claude -c --dangerously-skip-permissions
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  YOUR LOCAL MACHINE (at home)                                   │
+│  ─────────────────────────────                                  │
+│  • Claude Remote Terminal server runs here                      │
+│  • Your project files live here                                 │
+│  • tmux sessions run here                                       │
+│  • Claude Code runs here                                        │
+└─────────────────────────────────────────────────────────────────┘
+                              ▲
+                              │ VPN (Tailscale)
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  YOUR REMOTE DEVICE (phone, work laptop, etc.)                  │
+│  ─────────────────────────────────────────────                  │
+│  • Just needs a web browser                                     │
+│  • No installation required                                     │
+│  • Simply connects to view/control your local machine           │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Do this:**
+### Your New Workflow
+
+**Step 1: On your LOCAL machine, start Claude Code inside tmux:**
 ```bash
 cd ~/projects/my-app
 tmux new -s myapp
 claude -c --dangerously-skip-permissions
 ```
 
-That's it! Now you can:
-- Close your laptop and leave home
-- Open the web interface on your phone/work laptop
-- Click on `myapp` session
-- Continue exactly where you left off
+**Step 2: From your REMOTE device (phone, work laptop):**
+1. Open any web browser
+2. Go to `http://your-tailscale-ip:8080`
+3. Login with your password
+4. Click on `myapp` session
+5. Continue exactly where you left off!
+
+That's it! All commands run on your local machine. Your remote device is just a window into your local terminal.
 
 ### Key Concept
 
